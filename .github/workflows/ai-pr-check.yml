@@ -1,0 +1,60 @@
+name: AI CI - PR Check
+
+# feat -> dev PR, hotfix -> main PR: 정적 분석, (단위 테스트 - 테스트 코드 없어 현재 제외), 빌드 검증, Docker Image 빌드(push 없음)
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+
+# 동일 PR에 연속 Push 발생 시 진행 중이던 이전 실행 자동 취소
+concurrency:
+  group: ai-pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 정적 분석 및 빌드 검증
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout # 소스 코드 다운로드
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.13"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install --no-cache-dir -r requirements.txt ruff
+
+      - name: 정적 분석 (Ruff Lint)
+        run: ruff check .
+
+      - name: 정적 분석 (Ruff Format)
+        run: ruff format --check .
+
+      # 단위 테스트 - 현재 테스트 코드가 없어 생략
+
+      - name: 빌드 검증 (앱 임포트)
+        run: python -c "from main import app"
+
+  docker-build:
+    name: Docker Image 빌드 (검증용, push 없음)
+    needs: verify
+    # ARM64 전용 GitHub Hosted 러너 사용
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Docker Image 빌드 (push 없음)
+        uses: docker/build-push-action@v7
+        with:
+          context: . # 빌드 컨텍스트 경로
+          push: false
+          tags: ktb4-1st-ai:pr-${{ github.event.pull_request.number }}
