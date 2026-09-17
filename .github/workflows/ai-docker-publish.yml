@@ -1,0 +1,85 @@
+name: AI Docker Image Publish
+
+# dev push(merge): Docker Image 빌드 및 GHCR(100-hours-a-week 조직 소속 패키지) Push
+#   - latest(로컬 테스트용 포인터), dev-<short SHA>(불변 추적용) 태그
+# release tag(v*.*.*) push: 배포용 Docker Image 빌드 및 GHCR Push
+#   - main으로 dev/hotfix가 merge된 뒤, 해당 커밋에 Semantic Version 태그(예: v1.0.1)를 push하면 트리거됨
+#   - Semantic Version 태그만 이미지 태그로 사용
+on:
+  push:
+    branches:
+      - dev
+    tags:
+      - "v*.*.*"
+
+# 동일 브랜치/태그에 연속 Push 발생 시 진행 중이던 이전 실행 자동 취소
+concurrency:
+  group: ai-docker-publish-${{ github.ref }} # dev에 push하면 refs/heads/dev, 태그 push하면 refs/tags/v1.0.1
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository는 "100-hours-a-week/KTB4_1st_AI" 형태(docker/metadata-action이 images 값을 자동으로 소문자 변환)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Docker Image 빌드 및 GHCR Push
+    # ARM64 전용 GitHub Hosted 러너 사용
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Docker 메타데이터(태그/라벨) 생성
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # dev          : latest(로컬 테스트용 포인터), dev-<short SHA>(불변 추적용)
+          # release tag  : push된 태그(v1.0.1)에서 v를 뗀 Semantic Version을 그대로 태그로 사용
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=sha,format=short,prefix=dev-,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.authors=${{ github.actor }}
+
+      - name: Docker Image 빌드 및 Push
+        id: build-push
+        run: |
+          set -e
+
+          # 태그 변환
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          # 라벨 변환
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [ -z "$label" ] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "${{ steps.meta.outputs.labels }}"
+
+          # 이미지 빌드 + GHCR push
+          docker buildx build \
+            --push \
+            "${TAG_ARGS[@]}" \
+            "${LABEL_ARGS[@]}" \
+            .
