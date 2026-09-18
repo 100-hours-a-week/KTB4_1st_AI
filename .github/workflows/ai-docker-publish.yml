@@ -83,3 +83,17 @@ jobs:
             "${TAG_ARGS[@]}" \
             "${LABEL_ARGS[@]}" \
             .
+
+      - name: dev 이미지 정리 (최신 3개만 유지)
+        if: github.ref == 'refs/heads/dev'
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
+        with:
+          delete-tags: "dev-*"
+          keep-n-tagged: 3
+
+      - name: main 배포 이미지 정리 (최신 5개만 유지)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
+        with:
+          delete-tags: "*.*.*"
+          keep-n-tagged: 5
