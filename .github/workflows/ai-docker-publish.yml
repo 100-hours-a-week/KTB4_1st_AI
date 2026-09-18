@@ -1,5 +1,8 @@
 name: AI Docker Image Publish
 
+# Actions 목록에 커밋 메시지 대신 트리거한 브랜치/태그가 보이도록 지정
+run-name: "Docker Publish: ${{ github.ref_name }} (${{ github.actor }})"
+
 # dev push(merge): Docker Image 빌드 및 GHCR(100-hours-a-week 조직 소속 패키지) Push
 #   - latest(로컬 테스트용 포인터), dev-<short SHA>(불변 추적용) 태그
 # release tag(v*.*.*) push: 배포용 Docker Image 빌드 및 GHCR Push
