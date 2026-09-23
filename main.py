@@ -2,9 +2,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from core.config import settings
-from features.price.router import router as price_router
-
 from features.moderation.router import router as moderation_router
+from features.price.router import router as price_router
 from features.vision.router import router as vision_router
 
 app = FastAPI(title="AI Server")
