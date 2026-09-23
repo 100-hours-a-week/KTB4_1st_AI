@@ -1,7 +1,7 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-
-import logging
 
 from core.config import settings
 from features.moderation.router import router as moderation_router
