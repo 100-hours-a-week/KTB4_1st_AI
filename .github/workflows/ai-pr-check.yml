@@ -41,6 +41,8 @@ jobs:
       # 단위 테스트 - 현재 테스트 코드가 없어 생략
 
       - name: 빌드 검증 (앱 임포트)
+        env:
+          ANTHROPIC_API_KEY: dummy-for-import-check
         run: python -c "from main import app"
 
   docker-build:
