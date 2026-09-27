@@ -1,11 +1,15 @@
 # claude_provider.py
 import asyncio
 import base64
+import logging
+import time
 
 import anthropic
 from anthropic import AsyncAnthropic
 
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 client = AsyncAnthropic(
     api_key=settings.anthropic_api_key,
@@ -22,7 +26,16 @@ async def _call_with_retry(**request) -> anthropic.types.Message:
     last_error: Exception | None = None
     for attempt in range(settings.claude_max_retries + 1):
         try:
-            return await client.messages.create(**request)
+            start = time.perf_counter()
+            response = await client.messages.create(**request)
+            elapsed = time.perf_counter() - start
+            logger.info(
+                "Claude API 호출 소요 시간: %.2f초 (model=%s, tools=%s)",
+                elapsed,
+                request.get("model"),
+                bool(request.get("tools")),
+            )
+            return response
         except (
             anthropic.RateLimitError,
             anthropic.APITimeoutError,
