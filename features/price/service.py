@@ -11,9 +11,9 @@ K_SPREAD = 0.19  # 근거: Kaplan & Menzio (2014, NBER WP 19877) Table 2, UPC �
 
 
 def calculate_price_range(
-    unit_price: int, value_tolerance: float, trade_speed: float
+    unit_price: int, value_gap_tolerance: float, exchange_urgency: float
 ) -> tuple[int, int]:
-    discount_ratio = value_tolerance * K_SPREAD + trade_speed * K_SKEW
+    discount_ratio = value_gap_tolerance * K_SPREAD + exchange_urgency * K_SKEW
     min_price = round(unit_price * (1 - discount_ratio))
     min_price = max(min_price, 0)
     return min_price, unit_price
@@ -40,23 +40,19 @@ async def call_claude_price(request: PriceEstimateRequest) -> dict:
 
 
 async def estimate_price(request: PriceEstimateRequest) -> PriceEstimateResponse:
-    if request.keyword is not None and request.unitPrice is not None:
-        keyword = request.keyword
-        unit_price = request.unitPrice
-    else:
-        result = await call_claude_price(request)
+    result = await call_claude_price(request)
 
-        try:
-            keyword = result["keyword"]
-            unit_price = result["referenceUnitPrice"]
-        except (KeyError, TypeError) as error:
-            raise PriceEstimationException() from error
+    try:
+        keyword = result["keyword"]
+        unit_price = result["referenceUnitPrice"]
+    except (KeyError, TypeError) as error:
+        raise PriceEstimationException() from error
 
-        if not isinstance(unit_price, int):
-            raise PriceEstimationException()
+    if not isinstance(unit_price, int):
+        raise PriceEstimationException()
 
     min_unit_price, max_unit_price = calculate_price_range(
-        unit_price, request.valueTolerance, request.tradeSpeed
+        unit_price, request.valueGapToleranceScore, request.exchangeUrgencyScore
     )
 
     return PriceEstimateResponse(
