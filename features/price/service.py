@@ -1,5 +1,6 @@
 # service.py
 import json
+import re
 
 from features.price.exceptions import PriceEstimationException
 from features.price.prompts import PRICE_ESTIMATE_PROMPT
@@ -8,6 +9,10 @@ from shared.llm.claude_provider import ClaudeTransientError, generate_with_web_s
 
 K_SKEW = 0.15  # 근거 약함: 클리어런스 마크다운 1단계(25%)의 60% 수준 — 생필품 특화 데이터 없음
 K_SPREAD = 0.19  # 근거: Kaplan & Menzio (2014, NBER WP 19877) Table 2, UPC 기준 가격 표준편차 19%
+
+
+def normalize_keyword(keyword: str) -> str:
+    return re.sub(r"[\s\-_]+", "", keyword).lower()
 
 
 def calculate_price_range(
@@ -47,6 +52,14 @@ async def estimate_price(request: PriceEstimateRequest) -> PriceEstimateResponse
         unit_price = result["referenceUnitPrice"]
     except (KeyError, TypeError) as error:
         raise PriceEstimationException() from error
+
+    if not isinstance(keyword, str) or not keyword.strip():
+        raise PriceEstimationException()
+
+    keyword = normalize_keyword(keyword)
+
+    if not keyword:
+        raise PriceEstimationException()
 
     if not isinstance(unit_price, int):
         raise PriceEstimationException()
