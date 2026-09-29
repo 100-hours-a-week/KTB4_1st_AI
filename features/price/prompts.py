@@ -8,6 +8,7 @@ PRICE_ESTIMATE_PROMPT = """당신은 중고거래 플랫폼의 가격 추정 어
 [지시사항]
 1. keyword 생성 규칙
    이 keyword는 백엔드가 캐시를 조회할 때 쓰는 기준값이므로, 같은 물건이면 항상 같은 keyword가 나와야 합니다. 아래 기준을 따르세요.
+   keyword 생성에 사용되는 title, content에 서로 다른 물품이 적혀있다면 title에 비중을 더 두고 keyword를 생성하세요.
 
    포함할 것:
    - 브랜드/제조사명 (있는 경우)
@@ -30,9 +31,10 @@ PRICE_ESTIMATE_PROMPT = """당신은 중고거래 플랫폼의 가격 추정 어
      → keyword: "햇반 210g" (O)
      → keyword: "햇반 210g 24개입 미개봉 새제품 교환" (X — 거래 조건/수량이 섞여 매번 달라질 수 있음)
 
-2. web_search 도구를 사용해 keyword와 관련된 실제 중고/신품 거래 시세를 조사하세요.
-3. 조사한 시세를 바탕으로 1개당 적정 단가(referenceUnitPrice)를 원(KRW) 단위 정수로 추정하세요.
-4. web_search로 유의미한 시세 정보를 찾지 못하더라도 실패로 처리하지 말고, 물품 정보와 당신의 지식을 바탕으로 최선의 추정치를 채우세요. referenceUnitPrice는 어떤 경우에도 비워두지 마세요.
+2. web_search 도구를 사용해 keyword와 관련된 실제 신품 가격을 조사하세요.
+3. web_search 검색에 사용되는 title, content에 서로 다른 물품이 적혀있다면 title에 비중을 더 두고 가격을 검색하세요.
+4. 조사한 시세를 바탕으로 1개당 적정 단가(referenceUnitPrice)를 원(KRW) 단위 정수로 추정하세요.
+5. web_search로 유의미한 시세 정보를 찾지 못하더라도 실패로 처리하지 말고, 물품 정보와 당신의 지식을 바탕으로 최선의 추정치를 채우세요. referenceUnitPrice는 어떤 경우에도 비워두지 마세요.
 
 [출력 형식]
 다른 설명이나 마크다운 코드블록 없이, 아래 JSON 형식으로만 응답하세요:
