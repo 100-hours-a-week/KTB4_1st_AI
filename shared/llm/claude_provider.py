@@ -89,9 +89,9 @@ async def generate(
 
 async def generate_with_web_search(
     prompt: str,
-    model: str = settings.claude_model_sonnet,
+    model: str = settings.claude_model_haiku,
     max_tokens: int = settings.claude_max_tokens,
-    max_uses: int = 5,
+    max_uses: int = 3,
 ) -> str:
     response = await _call_with_retry(
         model=model,
