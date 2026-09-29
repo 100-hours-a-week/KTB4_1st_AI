@@ -1,11 +1,16 @@
 # service.py
 import json
+import re
 
 from features.moderation.exceptions import ModerationProcessingException
 from features.moderation.prompts import MODERATION_PROMPT
 from features.moderation.rule_filter import RuleViolation, run_rule_filter
 from features.moderation.schemas import ModerationResponse
 from shared.llm.claude_provider import ClaudeTransientError, generate
+
+
+def normalize_keyword(keyword: str) -> str:
+    return re.sub(r"[\s\-_]+", "", keyword).lower()
 
 
 def _extract_json(raw_text: str) -> dict:
@@ -58,6 +63,11 @@ async def check_text(title: str, content: str) -> ModerationResponse:
         return ModerationResponse(
             isAppropriate=False, rejectionReason=rejection_reason, keyword=None
         )
+
+    if not isinstance(keyword, str) or not keyword.strip():
+        raise ModerationProcessingException()
+
+    keyword = normalize_keyword(keyword)
 
     if not keyword:
         raise ModerationProcessingException()
