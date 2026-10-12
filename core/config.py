@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     chroma_collection_name: str = "policy_sections"
     policy_docs_path: str = "./data"
 
-    chatbot_top_k: int = 2
-    chatbot_max_distance: float = 0.5
+    chatbot_top_k: int = 3
+    chatbot_max_distance: float = 0.45
     chatbot_history_limit: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
