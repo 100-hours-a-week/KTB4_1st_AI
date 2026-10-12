@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     chroma_path: str = "./chroma_data"
     chroma_collection_name: str = "policy_sections"
-    policy_docs_path: str = "./data/policies"
+    policy_docs_path: str = "./data"
 
     chatbot_top_k: int = 2
     chatbot_max_distance: float = 0.5
