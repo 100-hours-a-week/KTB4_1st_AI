@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from features.chatbot.exceptions import ChatbotException
 from features.chatbot.schemas import ChatbotRequest, ChatbotResponse
+from features.chatbot.service import ask_chatbot
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ async def ask(request: ChatbotRequest) -> ChatbotResponse | JSONResponse:
         )
 
     try:
-        return ChatbotResponse(answer="(임시 응답) 챗봇 연결 확인용입니다.")
+        return await ask_chatbot(request)
     except ChatbotException as error:
         logger.exception(
             "chatbot 실패: stage=%s error=%s detail=%s",
