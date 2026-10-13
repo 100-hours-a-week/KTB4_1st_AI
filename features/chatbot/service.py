@@ -83,14 +83,18 @@ async def _call_json(prompt: str, model: str, stage: str) -> dict:
 
 
 # 의도 분류
-async def _classify(message: str, history_text: str) -> tuple[str, str | None]:
+async def _classify(message: str, history_text: str) -> tuple[str, str | None, str]:
     prompt = INTENT_CLASSIFY_PROMPT.format(history=history_text, message=message)
     result = await _call_json(prompt, settings.claude_model_haiku, "intent")
     intent = result.get("intent")
     # 목록 밖의 값이면 비정상 응답으로 던지기
     if intent not in INTENTS:
         raise InvalidModelResponseError(stage="intent", detail=f"intent={intent}")
-    return intent, result.get("screen")
+    # 검색용 질문이 없거나 비어 있으면 원래 메시지로 대체
+    search_query = result.get("search_query")
+    if not isinstance(search_query, str) or not search_query.strip():
+        search_query = message
+    return intent, result.get("screen"), search_query.strip()
 
 
 # 화면 이동 버튼 만들기
@@ -110,8 +114,10 @@ def _build_action(screen: str | None) -> ChatbotAction | None:
 
 
 # 정책 질문 처리
-async def _answer_policy(message: str, history_text: str) -> ChatbotResponse:
-    results = await retrieve(message)
+async def _answer_policy(
+    message: str, search_query: str, history_text: str
+) -> ChatbotResponse:
+    results = await retrieve(search_query)
     # 거리가 설정한 값(0.45) 이상이면 Claude 호출 X
     if not results or results[0]["distance"] > settings.chatbot_max_distance:
         return ChatbotResponse(
@@ -139,8 +145,10 @@ async def ask_chatbot(request: ChatbotRequest) -> ChatbotResponse:
     message = request.message.strip()
     history_text = _format_history(request.history)
 
-    intent, screen = await _classify(message, history_text)
-    logger.info("chatbot intent=%s screen=%s", intent, screen)
+    intent, screen, search_query = await _classify(message, history_text)
+    logger.info(
+        "chatbot intent=%s screen=%s search_query=%s", intent, screen, search_query
+    )
 
     if intent == "out_of_scope":
         return ChatbotResponse(answer=OUT_OF_SCOPE_ANSWER)
@@ -154,4 +162,4 @@ async def ask_chatbot(request: ChatbotRequest) -> ChatbotResponse:
             answer=f"{label} 화면으로 이동할 수 있어요.", action=action
         )
 
-    return await _answer_policy(message, history_text)
+    return await _answer_policy(message, search_query, history_text)
