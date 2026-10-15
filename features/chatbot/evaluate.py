@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from core.config import settings
 from features.chatbot.exceptions import ChatbotException
 from features.chatbot.prompts import NOT_FOUND_ANSWER, OUT_OF_SCOPE_ANSWER
 from features.chatbot.retriever import retrieve
@@ -373,6 +374,7 @@ async def run_case(case: dict, semaphore: asyncio.Semaphore) -> dict:
                 answer=response.answer,
                 screen=response.action.screen.value if response.action else None,
                 sections=[item["section"] for item in results],
+                distances=[round(item["distance"], 3) for item in results],
                 context=format_context(results),
             )
             fixed = response.answer in (NOT_FOUND_ANSWER, OUT_OF_SCOPE_ANSWER)
@@ -420,6 +422,9 @@ def score_case(case: dict, row: dict) -> dict:
             )
     elif category == "unsupported" and verdict:
         scores["safety"] = float(verdict["behavior_ok"])
+
+    if category == "policy" and row["answer"] == NOT_FOUND_ANSWER and case["facts"]:
+        scores["correctness"] = 0.0
     return scores
 
 
@@ -488,9 +493,17 @@ async def main() -> None:
     means = aggregate(all_scores)
     report(means)
 
+    meta = {
+        "classify_model": settings.claude_model_haiku,
+        "answer_model": settings.claude_model_sonnet,
+        "top_k": settings.chatbot_top_k,
+        "max_distance": settings.chatbot_max_distance,
+        "cases": len(CASES),
+        "use_judge": USE_JUDGE,
+    }
     Path("eval_result.json").write_text(
         json.dumps(
-            {"rows": rows, "scores": all_scores, "means": means},
+            {"meta": meta, "rows": rows, "scores": all_scores, "means": means},
             ensure_ascii=False,
             indent=2,
         ),
