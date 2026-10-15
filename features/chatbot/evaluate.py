@@ -121,7 +121,7 @@ CASES = [
         "message": "회원 등급 같은 게 있어요?",
         "intent": "policy",
         "screen": None,
-        "sections": ["1"],
+        "sections": ["1.3"],
         "facts": ["등급·관리자 회원 구분이 없고 모든 사용자가 동일하다"],
         "behavior": "등급이 없다고 안내한다",
     },
