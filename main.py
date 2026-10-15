@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from core.config import settings
 from features.moderation.router import router as moderation_router
 from features.price.router import router as price_router
+from features.smart_search.router import router as smart_search_router
 from features.vision.router import router as vision_router
 
 logging.basicConfig(level=logging.INFO)
@@ -14,8 +15,8 @@ app = FastAPI(title="AI Server")
 
 app.include_router(vision_router)
 app.include_router(moderation_router)
-
 app.include_router(price_router)
+app.include_router(smart_search_router)
 
 
 @app.get("/health")
