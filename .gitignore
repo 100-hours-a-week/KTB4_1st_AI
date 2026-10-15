@@ -5,6 +5,5 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
-chroma_data/
 eval_result*.json
 price_benchmark.csv
