@@ -6,4 +6,5 @@ __pycache__/
 .vscode/
 .idea/
 chroma_data/
+eval_result*.json
 price_benchmark.csv
