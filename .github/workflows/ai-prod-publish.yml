@@ -1,0 +1,362 @@
+name: Publish AI-prod
+run-name: "Prod Publish: ${{ inputs.version || github.ref_name }} (${{ github.actor }})"
+
+# main에 포함된 커밋의 릴리즈 태그로 운영 이미지를 빌드하고 ECS에 배포
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "배포할 시맨틱 버전 (예: 1.2.3, v 제외)"
+        required: true
+        type: string
+
+concurrency:
+  group: ai-prod-publish
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository는 "100-hours-a-week/KTB4_1st_AI" 형태(docker/metadata-action이 images 값을 자동으로 소문자 변환)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    if: github.event_name == 'push'
+    name: Docker Image 빌드 및 GHCR Push
+    # ARM64 전용 GitHub Hosted 러너 사용
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag on main
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::운영 배포 태그는 vMAJOR.MINOR.PATCH 형식이어야 합니다"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::main에 포함된 커밋의 태그만 운영에 배포할 수 있습니다"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker 메타데이터(태그/라벨) 생성
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest는 개발 이미지에만 사용
+          flavor: |
+            latest=false
+          # 릴리즈 태그의 v 접두어를 제외한 버전을 이미지 태그로 사용
+          tags: |
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.authors=${{ github.actor }}
+
+      - name: Docker Image 빌드 및 Push
+        id: build-push
+        run: |
+          set -e
+
+          # 태그 변환
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          # 라벨 변환
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [ -z "$label" ] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "${{ steps.meta.outputs.labels }}"
+
+          # 이미지 빌드 + GHCR push
+          # --provenance=false --sbom=false: 이미지 빌드 시 SBOM 생성 및 Provenance 서명 생성을 건너뜀(불필요한 증명서 생성 방지)
+          docker buildx build \
+            --push \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
+            --provenance=false \
+            --sbom=false \
+            "${TAG_ARGS[@]}" \
+            "${LABEL_ARGS[@]}" \
+            .
+
+      # 이번 릴리즈 빌드의 digest를 운영 배포에 전달
+      - name: Export image digest
+        id: image
+        run: |
+          digest=$(jq -er '.["containerimage.digest"]' "$RUNNER_TEMP/image-metadata.json")
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: main 배포 이미지 정리 (최신 5개만 유지)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
+        with:
+          package: ktb4_1st_ai
+          delete-tags: "*.*.*"
+          keep-n-tagged: 5
+          delete-untagged: true
+
+      # 운영 이미지 발행 결과 알림
+      - name: Send Discord Notification
+        if: always()
+        continue-on-error: true
+        env:
+          JOB_STATUS: ${{ job.status }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REPO_NAME: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || github.event.pull_request.title || '수동 실행' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          # 1. 웹훅 URL 미등록 시 에러 없이 스킵
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL is not configured. Skipping notification."
+            exit 0
+          fi
+
+          # 2. 빌드 결과 상태값 분기
+          case "$JOB_STATUS" in
+            success)
+              COLOR=3066993
+              STATUS_EMOJI="✅"
+              STATUS_TEXT="성공"
+              ;;
+            failure)
+              COLOR=15158332
+              STATUS_EMOJI="🚨"
+              STATUS_TEXT="실패"
+              ;;
+            *)
+              COLOR=15105570
+              STATUS_EMOJI="⚠️"
+              STATUS_TEXT="취소됨"
+              ;;
+          esac
+
+          # 3. 커밋 메시지 첫 줄만 사용하고 타임스탬프 생성
+          FIRST_LINE_COMMIT_MSG=$(printf '%s\n' "$COMMIT_MSG" | head -n 1)
+          TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          # 4. jq를 통한 안전한 JSON 직렬화
+          jq -n \
+            --arg title "${STATUS_EMOJI} [${WORKFLOW_NAME}] ${STATUS_TEXT}" \
+            --argjson color "$COLOR" \
+            --arg repo "\`${REPO_NAME}\`" \
+            --arg ref "\`${REF_NAME}\`" \
+            --arg actor "$ACTOR" \
+            --arg commit "$FIRST_LINE_COMMIT_MSG" \
+            --arg run_url "[GitHub Actions 실행 로그 바로가기](${RUN_URL})" \
+            --arg time "$TIMESTAMP" \
+            '{
+              embeds: [
+                {
+                  title: $title,
+                  color: $color,
+                  fields: [
+                    { name: "저장소", value: $repo, inline: true },
+                    { name: "브랜치 / 태그", value: $ref, inline: true },
+                    { name: "트리거 유저", value: $actor, inline: true },
+                    { name: "커밋 메시지", value: $commit },
+                    { name: "상세 로그", value: $run_url }
+                  ],
+                  footer: { text: "바꾸까 배포 알림" },
+                  timestamp: $time
+                }
+              ]
+            }' > payload.json
+
+          # 5. Webhook 전송 (실패해도 워크플로우를 중단시키지 않음)
+          curl -s -S --fail \
+               -H "Content-Type: application/json" \
+               -X POST \
+               -d @payload.json \
+               "$WEBHOOK_URL" || echo "::warning::Failed to deliver Discord notification."
+
+  select-image:
+    name: Select Published Release Image
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Validate manual release input
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::수동 버전 배포는 main 브랜치에서 실행해야 합니다"
+            exit 1
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::버전은 v 없이 MAJOR.MINOR.PATCH 형식으로 입력해야 합니다"
+            exit 1
+          fi
+
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Verify release commit on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::main에 포함된 릴리즈 태그만 배포할 수 있습니다"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve release image digest
+        id: image
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          image_ref="ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_VERSION}"
+          digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' | jq -er '.digest')
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::이미지 digest를 확인하지 못했습니다"
+            exit 1
+          fi
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}@${digest}" >> "$GITHUB_OUTPUT"
+
+  # main 릴리즈 이미지를 해당 서비스의 운영 환경에 배포
+  deploy-prod:
+    name: Deploy Prod to ECS
+    needs: [build-and-push, select-image]
+    if: ${{ always() && !cancelled() && (needs.build-and-push.result == 'success' || needs.select-image.result == 'success') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    environment: prod
+    permissions:
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECS_CLUSTER: bakkucca-v2-prod-ai
+      ECS_SERVICE: bakkucca-v2-prod-ai
+      CONTAINER_NAME: ai
+      CONTAINER_PORT: "8000"
+      IMAGE_URI: ${{ needs.build-and-push.outputs.image || needs.select-image.outputs.image }}
+      DEPLOY_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - name: Check deployment settings
+        run: |
+          : "${AWS_ROLE_ARN:?prod 환경의 AWS_ROLE_ARN Variable이 필요합니다}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 기존 태스크 세트 정리 후 다음 배포 시작, 빈 EC2의 축소는 Capacity Provider가 관리
+      - name: Wait for previous deployment cleanup
+        id: previous
+        run: |
+          service=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0]' --output json)
+          echo "task-definition=$(jq -r '.taskDefinition' <<< "$service")" >> "$GITHUB_OUTPUT"
+          for attempt in {1..160}; do
+            task_sets=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'length(services[0].taskSets)' --output text)
+            if [[ "$task_sets" == "1" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::이전 태스크 세트 정리를 확인하지 못했습니다"
+          exit 1
+
+      # 등록된 실행 설정을 유지하고 이미지 주소만 교체
+      - name: Render task definition
+        id: task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.ECS_SERVICE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.IMAGE_URI }}
+
+      - name: Create CodeDeploy AppSpec
+        run: |
+          jq -n --arg container "$CONTAINER_NAME" --argjson port "$CONTAINER_PORT" --arg provider "$ECS_SERVICE" '
+            {version: 0.0, Resources: [{TargetService: {
+              Type: "AWS::ECS::Service",
+              Properties: {
+                TaskDefinition: "",
+                LoadBalancerInfo: {ContainerName: $container, ContainerPort: $port},
+                CapacityProviderStrategy: [{CapacityProvider: $provider, Weight: 1}]
+              }
+            }}]}' > "$RUNNER_TEMP/appspec.json"
+
+      - name: Deploy with CodeDeploy
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          codedeploy-appspec: ${{ runner.temp }}/appspec.json
+          codedeploy-application: ${{ env.ECS_SERVICE }}
+          codedeploy-deployment-group: ${{ env.ECS_SERVICE }}
+          codedeploy-deployment-description: ${{ inputs.version || github.ref_name }} / ${{ github.sha }} / ${{ github.run_id }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      - name: Record deployment
+        if: always()
+        env:
+          DEPLOY_STATUS: ${{ job.status }}
+          TASK_DEFINITION_ARN: ${{ steps.deploy.outputs.task-definition-arn }}
+          PREVIOUS_TASK_DEFINITION_ARN: ${{ steps.previous.outputs.task-definition }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.codedeploy-deployment-id }}
+        run: |
+          {
+            printf '### v2 prod 배포\n\n'
+            printf '| 항목 | 값 |\n|---|---|\n'
+            printf '| 결과 | %s |\n' "$DEPLOY_STATUS"
+            printf '| 버전 | `%s` |\n' "$DEPLOY_VERSION"
+            printf '| 워크플로 커밋 | `%s` |\n' "$GITHUB_SHA"
+            printf '| 이미지 | `%s` |\n' "$IMAGE_URI"
+            printf '| 이전 태스크 정의 | `%s` |\n' "$PREVIOUS_TASK_DEFINITION_ARN"
+            printf '| 새 태스크 정의 | `%s` |\n' "$TASK_DEFINITION_ARN"
+            printf '| 배포 ID | `%s` |\n' "$DEPLOYMENT_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
