@@ -1,0 +1,260 @@
+name: Publish AI-dev
+run-name: "Dev Publish: ${{ github.ref_name }} (${{ github.actor }})"
+
+# dev에 머지된 커밋의 이미지를 빌드하고 개발 ECS 서비스에 배포
+on:
+  push:
+    branches:
+      - dev
+
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "이미지 digest (sha256:...), 비우면 latest"
+        required: false
+        default: latest
+        type: string
+
+concurrency:
+  group: ai-dev-publish
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository는 "100-hours-a-week/KTB4_1st_AI" 형태(docker/metadata-action이 images 값을 자동으로 소문자 변환)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    if: github.event_name == 'push'
+    name: Docker Image 빌드 및 GHCR Push
+    # ARM64 전용 GitHub Hosted 러너 사용
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker 메타데이터(태그/라벨) 생성
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short,prefix=dev-
+          labels: |
+            org.opencontainers.image.authors=${{ github.actor }}
+
+      - name: Docker Image 빌드 및 Push
+        id: build-push
+        run: |
+          set -e
+
+          # 태그 변환
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            TAG_ARGS+=(--tag "$tag")
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          # 라벨 변환
+          LABEL_ARGS=()
+          while IFS= read -r label; do
+            [ -z "$label" ] && continue
+            LABEL_ARGS+=(--label "$label")
+          done <<< "${{ steps.meta.outputs.labels }}"
+
+          # 이미지 빌드 + GHCR push
+          # --provenance=false --sbom=false: 이미지 빌드 시 SBOM 생성 및 Provenance 서명 생성을 건너뜀(불필요한 증명서 생성 방지)
+          docker buildx build \
+            --push \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
+            --provenance=false \
+            --sbom=false \
+            "${TAG_ARGS[@]}" \
+            "${LABEL_ARGS[@]}" \
+            .
+
+      # 이번 빌드의 digest를 개발 배포에 전달
+      - name: Export image digest
+        id: image
+        run: |
+          digest=$(jq -er '.["containerimage.digest"]' "$RUNNER_TEMP/image-metadata.json")
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: dev 이미지 정리 (최신 3개만 유지)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
+        with:
+          package: ktb4_1st_ai
+          delete-tags: "dev-*"
+          keep-n-tagged: 3
+          delete-untagged: true
+
+  select-image:
+    name: Select Dev Image
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      packages: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Validate dev image input
+        env:
+          REQUESTED_DIGEST: ${{ inputs.digest }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/dev" ]]; then
+            echo "::error::개발 수동 배포는 dev 브랜치에서 실행해야 합니다"
+            exit 1
+          fi
+          requested="${REQUESTED_DIGEST:-latest}"
+          if [[ "$requested" != "latest" && ! "$requested" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::digest는 sha256:<64자리 소문자 16진수> 또는 latest여야 합니다"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve dev image digest
+        id: image
+        shell: bash
+        env:
+          REQUESTED_DIGEST: ${{ inputs.digest }}
+        run: |
+          requested="${REQUESTED_DIGEST:-latest}"
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [[ "$requested" == "latest" ]]; then
+            image_ref="${repository}:latest"
+          else
+            image_ref="${repository}@${requested}"
+          fi
+          digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' | jq -er '.digest')
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::이미지 digest를 확인하지 못했습니다"
+            exit 1
+          fi
+          echo "image=${repository}@${digest}" >> "$GITHUB_OUTPUT"
+
+  # dev에 반영된 이미지를 해당 서비스의 개발 환경에 배포
+  deploy-dev:
+    name: Deploy Dev to ECS
+    needs: [build-and-push, select-image]
+    if: ${{ always() && !cancelled() && (needs.build-and-push.result == 'success' || needs.select-image.result == 'success') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    environment: dev
+    permissions:
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECS_CLUSTER: bakkucca-v2-dev-ai
+      ECS_SERVICE: bakkucca-v2-dev-ai
+      CONTAINER_NAME: ai
+      CONTAINER_PORT: "8000"
+      IMAGE_URI: ${{ needs.build-and-push.outputs.image || needs.select-image.outputs.image }}
+    steps:
+      - name: Check deployment settings
+        run: |
+          : "${AWS_ROLE_ARN:?dev 환경의 AWS_ROLE_ARN Variable이 필요합니다}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 기존 태스크 세트 정리 후 다음 배포 시작, 빈 EC2의 축소는 Capacity Provider가 관리
+      - name: Wait for previous deployment cleanup
+        id: previous
+        run: |
+          service=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0]' --output json)
+          echo "task-definition=$(jq -r '.taskDefinition' <<< "$service")" >> "$GITHUB_OUTPUT"
+          for attempt in {1..160}; do
+            task_sets=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'length(services[0].taskSets)' --output text)
+            if [[ "$task_sets" == "1" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::이전 태스크 세트 정리를 확인하지 못했습니다"
+          exit 1
+
+      # 등록된 실행 설정을 유지하고 이미지 주소만 교체
+      - name: Render task definition
+        id: task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.ECS_SERVICE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.IMAGE_URI }}
+
+      - name: Create CodeDeploy AppSpec
+        run: |
+          jq -n --arg container "$CONTAINER_NAME" --argjson port "$CONTAINER_PORT" --arg provider "$ECS_SERVICE" '
+            {version: 0.0, Resources: [{TargetService: {
+              Type: "AWS::ECS::Service",
+              Properties: {
+                TaskDefinition: "",
+                LoadBalancerInfo: {ContainerName: $container, ContainerPort: $port},
+                CapacityProviderStrategy: [{CapacityProvider: $provider, Weight: 1}]
+              }
+            }}]}' > "$RUNNER_TEMP/appspec.json"
+
+      - name: Deploy with CodeDeploy
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          codedeploy-appspec: ${{ runner.temp }}/appspec.json
+          codedeploy-application: ${{ env.ECS_SERVICE }}
+          codedeploy-deployment-group: ${{ env.ECS_SERVICE }}
+          codedeploy-deployment-description: ${{ github.sha }} / ${{ github.run_id }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      - name: Record deployment
+        if: always()
+        env:
+          DEPLOY_STATUS: ${{ job.status }}
+          TASK_DEFINITION_ARN: ${{ steps.deploy.outputs.task-definition-arn }}
+          PREVIOUS_TASK_DEFINITION_ARN: ${{ steps.previous.outputs.task-definition }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.codedeploy-deployment-id }}
+        run: |
+          {
+            printf '### v2 dev 배포\n\n'
+            printf '| 항목 | 값 |\n|---|---|\n'
+            printf '| 결과 | %s |\n' "$DEPLOY_STATUS"
+            printf '| 워크플로 커밋 | `%s` |\n' "$GITHUB_SHA"
+            printf '| 이미지 | `%s` |\n' "$IMAGE_URI"
+            printf '| 이전 태스크 정의 | `%s` |\n' "$PREVIOUS_TASK_DEFINITION_ARN"
+            printf '| 새 태스크 정의 | `%s` |\n' "$TASK_DEFINITION_ARN"
+            printf '| 배포 ID | `%s` |\n' "$DEPLOYMENT_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
