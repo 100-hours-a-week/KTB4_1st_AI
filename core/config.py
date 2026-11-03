@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     chatbot_max_distance: float = 0.45
     chatbot_history_limit: int = 10
 
+    refine_server_url: str = ""
+    refine_server_api_key: str = ""
+    refine_server_timeout: float = 10.0
+    refine_server_max_retries: int = 1
+    message_refine_max_length: int = 500
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
