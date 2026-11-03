@@ -24,9 +24,12 @@ class Settings(BaseSettings):
 
     refine_server_url: str = ""
     refine_server_api_key: str = ""
-    refine_server_timeout: float = 10.0
-    refine_server_max_retries: int = 1
+    refine_server_model: str = "Qwen/Qwen3-8B"
+    refine_server_timeout: float = 30.0
+    refine_server_max_retries: int = 0
+    refine_fallback_enabled: bool = True
     message_refine_max_length: int = 500
+    message_refine_max_tokens: int = 256
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
