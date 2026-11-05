@@ -277,7 +277,7 @@ jobs:
       ECS_SERVICE: bakkucca-v2-prod-ai
       CONTAINER_NAME: ai
       CONTAINER_PORT: "8000"
-      DEPLOY_STARTUP_MINUTES: "10"
+      DEPLOY_STARTUP_MINUTES: "20"
       AWS_MAX_ATTEMPTS: "2"
       IMAGE_URI: ${{ needs.build-and-push.outputs.image || needs.select-image.outputs.image }}
       DEPLOY_VERSION: ${{ inputs.version || github.ref_name }}
