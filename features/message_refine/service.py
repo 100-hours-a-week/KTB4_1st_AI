@@ -52,7 +52,11 @@ def _convert_error(error: openai.OpenAIError) -> MessageRefineException:
             return RefineServerAuthError(stage="request", detail=detail)
         if status in (429, 503):
             return RefineServerOverloadedError(stage="request", detail=detail)
-        return RefineServerApiError(stage="request", detail=detail)
+        if status == 502:
+            return RefineServerConnectionError(stage="connect", detail=detail)
+        if status == 504:
+            return RefineServerTimeoutError(stage="request", detail=detail)
+        return RefineServerApiError(stage="request", detail=type(error).__name__)
     return RefineServerApiError(stage="request", detail=type(error).__name__)
 
 
