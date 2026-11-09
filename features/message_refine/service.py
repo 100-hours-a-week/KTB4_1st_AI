@@ -16,7 +16,7 @@ from features.message_refine.exceptions import (
     RefineServerTimeoutError,
     UnrefinableMessageError,
 )
-from features.message_refine.prompts import INVALID_MARKER, build_system_prompt
+from features.message_refine.prompts import build_system_prompt
 from features.message_refine.schemas import (
     MessageRefineRequest,
     MessageRefineResponse,
@@ -112,7 +112,7 @@ def _parse_response(text: str) -> MessageRefineResponse:
         raise InvalidRefineResponseError(
             stage="validate", detail="다듬어진 메시지가 비어 있음"
         )
-    if INVALID_MARKER in refined:
+    if refined.strip("[]()\"'`.! ").upper() == "INVALID":
         raise UnrefinableMessageError(
             stage="validate", detail="모델이 다듬을 수 없는 입력으로 판단"
         )
