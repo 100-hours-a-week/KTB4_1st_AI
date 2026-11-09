@@ -14,6 +14,7 @@ from features.message_refine.exceptions import (
     RefineServerConnectionError,
     RefineServerOverloadedError,
     RefineServerTimeoutError,
+    UnrefinableMessageError,
 )
 from features.message_refine.prompts import build_system_prompt
 from features.message_refine.schemas import (
@@ -111,6 +112,10 @@ def _parse_response(text: str) -> MessageRefineResponse:
         raise InvalidRefineResponseError(
             stage="validate", detail="다듬어진 메시지가 비어 있음"
         )
+    if refined.strip("[]()\"'`.! ").upper() == "INVALID":
+        raise UnrefinableMessageError(
+            stage="validate", detail="모델이 다듬을 수 없는 입력으로 판단"
+        )
     return MessageRefineResponse(refined=refined)
 
 
@@ -134,6 +139,8 @@ async def refine_message(request: MessageRefineRequest) -> MessageRefineResponse
     try:
         text = await _refine_with_retry(system_prompt, request.message)
         result = _parse_response(text)
+    except UnrefinableMessageError:
+        raise
     except MessageRefineException as error:
         if not settings.refine_fallback_enabled:
             raise
@@ -146,6 +153,8 @@ async def refine_message(request: MessageRefineRequest) -> MessageRefineResponse
         source = "claude"
         try:
             result = _parse_response(await _call_claude(system_prompt, request.message))
+        except UnrefinableMessageError:
+            raise
         except MessageRefineException as fallback_error:
             logger.error(
                 "Claude 대체도 실패: stage=%s error=%s detail=%s",
