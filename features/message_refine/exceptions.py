@@ -36,3 +36,8 @@ class RefineServerApiError(MessageRefineException):
 class InvalidRefineResponseError(MessageRefineException):
     error = "invalid_refine_response"
     message = "응답을 처리하지 못했어요. 다시 시도해주세요."
+
+
+class UnrefinableMessageError(MessageRefineException):
+    error = "unrefinable_message"
+    message = "다듬을 수 없는 메시지예요. 내용을 확인해 주세요."
