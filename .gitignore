@@ -7,3 +7,4 @@ __pycache__/
 .idea/
 eval_result*.json
 price_benchmark.csv
+style_compare*.json
